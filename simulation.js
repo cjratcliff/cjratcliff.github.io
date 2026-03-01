@@ -36,6 +36,50 @@ let gl = canvas.getContext('webgl2', params);
 gl.getExtension('EXT_color_buffer_float');
 gl.getExtension('OES_texture_float_linear');
 
+const textureBicubic = `
+    vec4 cubic(float v) {
+        vec4 n = vec4( 1.0, 2.0, 3.0, 4.0 ) - v;
+        vec4 s = n * n * n;
+
+        float x = s.x;
+        float y = s.y - 4.0 * s.x;
+        float z = s.z - 4.0 * s.y + 6.0 * s.x;
+        float w = 6.0 - x - y - z;
+
+        return vec4( x, y, z, w ) * ( 1.0 / 6.0 );
+    }
+
+    // https://stackoverflow.com/questions/13501081/efficient-bicubic-filtering-code-in-glsl
+    vec4 textureBicubic(sampler2D sampler, vec2 texCoords) {
+        vec2 texSize = vec2(textureSize(sampler, 0));
+        vec2 invTexSize = 1.0 / texSize;
+
+        texCoords = texCoords * texSize - 0.5;
+
+        vec2 fxy = fract(texCoords);
+        texCoords -= fxy;
+
+        vec4 xcubic = cubic(fxy.x);
+        vec4 ycubic = cubic(fxy.y);
+
+        vec4 c = texCoords.xxyy + vec2 (-0.5, +1.5).xyxy;
+
+        vec4 s = vec4(xcubic.xz + xcubic.yw, ycubic.xz + ycubic.yw);
+        vec4 offset = c + vec4(xcubic.yw, ycubic.yw) / s;
+
+        offset *= invTexSize.xxyy;
+
+        vec4 sample0 = texture(sampler, offset.xz);
+        vec4 sample1 = texture(sampler, offset.yz);
+        vec4 sample2 = texture(sampler, offset.xw);
+        vec4 sample3 = texture(sampler, offset.yw);
+
+        float sx = s.x / (s.x + s.y);
+        float sy = s.z / (s.z + s.w);
+
+        return mix(mix(sample3, sample2, sx), mix(sample1, sample0, sx), sy);
+    }`
+
 const baseVS = `#version 300 es
     precision highp float;
 
@@ -64,6 +108,8 @@ const simFS = `#version 300 es
     uniform float uViscosityStrength;
     out vec4 outPos;
 
+    ${textureBicubic}
+
     void main() {
         vec2 uv = gl_FragCoord.xy / vec2(${texture_size}.0);
         vec2 pos = texture(uParticle, uv).xy;
@@ -73,28 +119,28 @@ const simFS = `#version 300 es
 
         // density is 1 from the particle itself
         // the max shouldnt be necessary - just for safety
-        float density = texture(uDensity, fieldUV).x;
+        float density = textureBicubic(uDensity, fieldUV).x;
         float density_term = density - uRestDensity;
 
-        float nearDensity = texture(uDensity, fieldUV).y;
+        // float nearDensity = textureBicubic(uDensity, fieldUV).y;
 
-        vec2 grad = texture(uPressure, fieldUV).xy;
-        vec2 invDensityGrad = texture(uPressure, fieldUV).zw;
+        vec2 grad = textureBicubic(uPressure, fieldUV).xy;
+        vec2 invDensityGrad = textureBicubic(uPressure, fieldUV).zw;
         vec2 pressureForce = uGasConstant * ((density_term * invDensityGrad) + grad);
         // pressureForce = normalize(pressureForce) * max(0.0, length(pressureForce) - (uGasConstant * ((2.0 * density - uRestDensity) / density)));
 
-        vec2 nearGrad = texture(uNearPressure, fieldUV).xy;
-        vec2 invDensityNearGrad = texture(uNearPressure, fieldUV).zw;
-        vec2 nearPressureForce = uNearPressureMultiplier * ((density_term * invDensityNearGrad) + nearGrad);
+        // vec2 nearGrad = textureBicubic(uNearPressure, fieldUV).xy;
+        // vec2 invDensityNearGrad = textureBicubic(uNearPressure, fieldUV).zw;
+        // vec2 nearPressureForce = uNearPressureMultiplier * ((density_term * invDensityNearGrad) + nearGrad);
 
-        vec4 viscosity = texture(uViscosity, fieldUV);
-        vec2 viscosityForce = -uViscosityStrength * (viscosity.xy - (vel * viscosity.z));
+        // vec4 viscosity = textureBicubic(uViscosity, fieldUV);
+        // vec2 viscosityForce = -uViscosityStrength * (viscosity.xy - (vel * viscosity.z));
 
         vel *= 0.99; // damping
 
         vel += pressureForce * dT;
-        vel += nearPressureForce * dT;
-        vel += viscosityForce * dT;
+        // vel += nearPressureForce * dT;
+        // vel += viscosityForce * dT;
         vel.y -= uGravity * dT;
         pos += vel * dT;
 
@@ -157,6 +203,8 @@ const pressureFS = `#version 300 es
     out vec4 outColor;
     in vec4 vParticleInfo;
 
+    ${textureBicubic}
+
     void main() {
         vec2 vecFromCentre = gl_PointCoord - 0.5;
         vecFromCentre.y *= -1.0; // flip y for correct orientation
@@ -170,7 +218,7 @@ const pressureFS = `#version 300 es
         vec2 grad = vecFromCentre * inversesqrt(max(lenSq, 1e-8)) * strength; // safe normalize
 
         vec2 fieldUV = vParticleInfo.xy * 0.5 + 0.5; // (-1, 1) world pos range to (0, 1) for UV
-        float density = texture(uDensity, fieldUV).x;
+        float density = textureBicubic(uDensity, fieldUV).x;
         float invDensity = 1.0 / (density + 1e-6);
         vec2 invDensityGrad = grad * invDensity;
 
@@ -324,10 +372,10 @@ let particleFBO = [
 ];
 
 // render targets
-let densityFBO = createFBO(FIELD_W, FIELD_H, gl.LINEAR);
-let pressureFBO = createFBO(FIELD_W, FIELD_H, gl.LINEAR);
-let nearPressureFBO = createFBO(FIELD_W, FIELD_H, gl.LINEAR);
-let viscosityFBO = createFBO(FIELD_W, FIELD_H, gl.LINEAR);
+let densityFBO = createFBO(FIELD_W, FIELD_H, gl.NEAREST);
+let pressureFBO = createFBO(FIELD_W, FIELD_H, gl.NEAREST);
+let nearPressureFBO = createFBO(FIELD_W, FIELD_H, gl.NEAREST);
+let viscosityFBO = createFBO(FIELD_W, FIELD_H, gl.NEAREST);
 
 function randomRange(min, max) {
     return Math.random() * (max - min) + min;
@@ -368,9 +416,9 @@ gui.add(config, 'HEATMAP_INTENSITY', 0.01, 0.1).name('Heatmap Brightness');
 gui.add(config, 'PARTICLE_OPACITY', 0, 1.0).name('Particle Opacity');
 gui.add(config, 'REST_DENSITY', 0.0, 30.5).name('Rest Density');
 gui.add(config, 'GAS_CONSTANT', 0.0, 50.0).name('Gas Constant');
-gui.add(config, 'NEAR_PRESSURE_MULTIPLIER', 0.0, 20.0).name('Near Pressure Multiplier');
+// gui.add(config, 'NEAR_PRESSURE_MULTIPLIER', 0.0, 20.0).name('Near Pressure Multiplier');
 gui.add(config, 'GRAVITY', 0.0, 10.0).name('Gravity');
-gui.add(config, 'VISCOSITY', 0.0, 100.0).name('Viscosity');
+// gui.add(config, 'VISCOSITY', 0.0, 100.0).name('Viscosity');
 
 // Initialise stats for FPS
 const stats = new Stats();
