@@ -1,11 +1,18 @@
 'use strict';
 
 const canvas = document.getElementsByTagName('canvas')[0];
-const TEXTURE_SIZE = 200;
-const PARTICLE_COUNT = TEXTURE_SIZE * TEXTURE_SIZE;
+const DESKTOP_TEXTURE_SIZE = 200;
+const MOBILE_TEXTURE_SIZE = 100;
 const FIELD_W = 240;
 const FIELD_H = Math.floor(window.screen.availHeight / window.screen.availWidth * FIELD_W);
-console.log(FIELD_H);
+
+let texture_size = DESKTOP_TEXTURE_SIZE;
+const regex = /Mobi|Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
+if (regex.test(navigator.userAgent)) {
+    texture_size = MOBILE_TEXTURE_SIZE;
+}
+
+let particle_count = texture_size * texture_size;
 
 const config = {
     N_SUBSTEPS: 3,
@@ -58,7 +65,7 @@ const simFS = `#version 300 es
     out vec4 outPos;
 
     void main() {
-        vec2 uv = gl_FragCoord.xy / vec2(${TEXTURE_SIZE}.0);
+        vec2 uv = gl_FragCoord.xy / vec2(${texture_size}.0);
         vec2 pos = texture(uParticle, uv).xy;
         vec2 vel = texture(uParticle, uv).zw;
 
@@ -120,7 +127,7 @@ const splatVS = `#version 300 es
 
     void main() {
         int id = gl_VertexID;
-        vec2 uv = vec2(id % ${TEXTURE_SIZE}, id / ${TEXTURE_SIZE}) / vec2(${TEXTURE_SIZE}.0);
+        vec2 uv = vec2(id % ${texture_size}, id / ${texture_size}) / vec2(${texture_size}.0);
         vParticleInfo = texture(uParticle, uv);
         vec2 pos = vParticleInfo.xy;
         gl_Position = vec4(pos, 0.0, 1.0);
@@ -246,7 +253,7 @@ const particleVS = `#version 300 es
 
     void main() {
         int id = gl_VertexID;
-        vec2 uv = vec2(id % ${TEXTURE_SIZE}, id / ${TEXTURE_SIZE}) / vec2(${TEXTURE_SIZE}.0);
+        vec2 uv = vec2(id % ${texture_size}, id / ${texture_size}) / vec2(${texture_size}.0);
         vec2 pos = texture(uParticle, uv).xy;
         gl_Position = vec4(pos, 0.0, 1.0);
         gl_PointSize = 1.5;
@@ -312,8 +319,8 @@ const particleProgram = new Program(particleVS, particleFS);
 
 // two particle textures for ping-pong
 let particleFBO = [
-    createFBO(TEXTURE_SIZE, TEXTURE_SIZE, gl.NEAREST),
-    createFBO(TEXTURE_SIZE, TEXTURE_SIZE, gl.NEAREST)
+    createFBO(texture_size, texture_size, gl.NEAREST),
+    createFBO(texture_size, texture_size, gl.NEAREST)
 ];
 
 // render targets
@@ -327,8 +334,8 @@ function randomRange(min, max) {
 }
 
 // initialise particles
-const initialData = new Float32Array(PARTICLE_COUNT * 4);
-for (let i = 0; i < PARTICLE_COUNT; i++) {
+const initialData = new Float32Array(particle_count * 4);
+for (let i = 0; i < particle_count; i++) {
     // position
     initialData[i * 4] = randomRange(-0.9, 0.4); // x
     initialData[i * 4 + 1] = randomRange(0.4, 0.9); // y
@@ -338,7 +345,7 @@ for (let i = 0; i < PARTICLE_COUNT; i++) {
     initialData[i * 4 + 3] = 0.0;
 }
 gl.bindTexture(gl.TEXTURE_2D, particleFBO[0].tex);
-gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TEXTURE_SIZE, TEXTURE_SIZE, gl.RGBA, gl.FLOAT, initialData);
+gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, texture_size, texture_size, gl.RGBA, gl.FLOAT, initialData);
 
 // Fullscreen quad
 const quadVAO = gl.createVertexArray();
@@ -391,7 +398,7 @@ function substep() {
     gl.uniform1i(densityProgram.uniforms.uParticle, 0);
     gl.uniform1f(densityProgram.uniforms.uRadius, config.SPLAT_RADIUS);
     gl.bindVertexArray(emptyVAO);
-    gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
+    gl.drawArrays(gl.POINTS, 0, particle_count);
 
     //// Pressure pass ////
     gl.bindFramebuffer(gl.FRAMEBUFFER, pressureFBO.fbo); // output
@@ -405,7 +412,7 @@ function substep() {
     gl.uniform1i(pressureProgram.uniforms.uDensity, 1);
     gl.uniform1f(pressureProgram.uniforms.uRadius, config.SPLAT_RADIUS);
     gl.bindVertexArray(emptyVAO);
-    gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
+    gl.drawArrays(gl.POINTS, 0, particle_count);
 
     //// Near pressure pass ////
     if (config.NEAR_PRESSURE_MULTIPLIER > 0.0) {
@@ -420,7 +427,7 @@ function substep() {
         gl.uniform1i(nearPressureProgram.uniforms.uDensity, 1);
         gl.uniform1f(nearPressureProgram.uniforms.uRadius, config.SPLAT_RADIUS);
         gl.bindVertexArray(emptyVAO);
-        gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
+        gl.drawArrays(gl.POINTS, 0, particle_count);
     }
 
     //// Viscosity pass ////
@@ -434,13 +441,13 @@ function substep() {
         gl.uniform1i(viscosityProgram.uniforms.uParticle, 0);
         gl.uniform1f(viscosityProgram.uniforms.uRadius, config.SPLAT_RADIUS);
         gl.bindVertexArray(emptyVAO);
-        gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
+        gl.drawArrays(gl.POINTS, 0, particle_count);
     }
 
     gl.disable(gl.BLEND);
 
     //// Simulation pass ////
-    gl.viewport(0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
+    gl.viewport(0, 0, texture_size, texture_size);
     gl.bindFramebuffer(gl.FRAMEBUFFER, particleFBO[1].fbo); // output
     simProgram.bind();
 
@@ -505,7 +512,7 @@ function update(time) {
         gl.uniform1i(particleProgram.uniforms.uParticle, 0);
         gl.uniform1f(particleProgram.uniforms.uOpacity, config.PARTICLE_OPACITY);
         gl.bindVertexArray(emptyVAO);
-        gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
+        gl.drawArrays(gl.POINTS, 0, particle_count);
         gl.disable(gl.BLEND);
     }
 
