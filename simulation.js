@@ -67,7 +67,7 @@ const simFS = `#version 300 es
     void main() {
         vec2 uv = gl_FragCoord.xy / vec2(${texture_size}.0);
         vec2 pos = texture(uParticle, uv).xy;
-        vec2 vel = texture(uParticle, uv).zw;
+        vec2 prev_pos = texture(uParticle, uv).zw;
 
         vec2 fieldUV = pos * 0.5 + 0.5; // (-1, 1) range to (0, 1)
 
@@ -87,35 +87,37 @@ const simFS = `#version 300 es
         vec2 invDensityNearGrad = texture(uNearPressure, fieldUV).zw;
         vec2 nearPressureForce = uNearPressureMultiplier * ((density_term * invDensityNearGrad) + nearGrad);
 
-        vec4 viscosity = texture(uViscosity, fieldUV);
-        vec2 viscosityForce = -uViscosityStrength * (viscosity.xy - (vel * viscosity.z));
+        // vec4 viscosity = texture(uViscosity, fieldUV);
+        // vec2 viscosityForce = -uViscosityStrength * (viscosity.xy - (vel * viscosity.z));
 
-        vel *= 0.99; // damping
+        // vel += nearPressureForce * dT;
+        // vel += viscosityForce * dT;
 
-        vel += pressureForce * dT;
-        vel += nearPressureForce * dT;
-        vel += viscosityForce * dT;
-        vel.y -= uGravity * dT;
-        pos += vel * dT;
+        vec2 acc = pressureForce;
+        acc.y -= uGravity;
+        vec2 new_pos = pos + (0.99 * (pos - prev_pos)) + (acc * dT * dT);
+
+        prev_pos = pos;
+        pos = new_pos;
 
         // Boundaries
         if (pos.x > 1.0) {
             pos.x = 1.0;
-            vel.x *= -0.5;
+            // vel.x *= -0.5;
         } else if (pos.x < -1.0) {
             pos.x = -1.0;
-            vel.x *= -0.5;
+            // vel.x *= -0.5;
         }
 
         if (pos.y > 1.0) {
             pos.y = 1.0;
-            vel.y *= -0.5;
+            // vel.y *= -0.5;
         } else if (pos.y < -1.0) {
             pos.y = -1.0;
-            vel.y *= -0.5;
+            // vel.y *= -0.5;
         }
 
-        outPos = vec4(pos, vel);
+        outPos = vec4(pos, prev_pos);
     }`;
 
 const splatVS = `#version 300 es
@@ -144,7 +146,7 @@ const densityFS = `#version 300 es
         vecFromCentre.y *= -1.0; // flip y for correct orientation
         float distance = length(vecFromCentre) * 2.0; // normalised so that all distances are between 0 and 1
         if (distance > 1.0) discard;
-        if (distance < 0.05) discard;
+        // if (distance < 0.05) discard;
         float density = pow(1.0 - distance, 2.0); // spikyPow2
         float nearDensity = pow(1.0 - distance, 3.0); // spikyPow3
         outColor = vec4(density, nearDensity, 0.0, 1.0);
@@ -162,7 +164,7 @@ const pressureFS = `#version 300 es
         vecFromCentre.y *= -1.0; // flip y for correct orientation
         float distance = length(vecFromCentre) * 2.0;
         if (distance > 1.0) discard;
-        if (distance < 0.05) discard;
+        // if (distance < 0.05) discard;
 
         float strength = 1.0 - distance;
         float lenSq = dot(vecFromCentre, vecFromCentre);
@@ -189,7 +191,7 @@ const nearPressureFS = `#version 300 es
         vecFromCentre.y *= -1.0; // flip y for correct orientation
         float distance = length(vecFromCentre) * 2.0;
         if (distance > 1.0) discard;
-        if (distance < 0.05) discard;
+        // if (distance < 0.05) discard;
 
         float strength = pow(1.0 - distance, 2.0);
         float lenSq = dot(vecFromCentre, vecFromCentre);
@@ -218,7 +220,7 @@ const viscosityFS = `#version 300 es
         if (distance > 1.0) discard;
 
         float v = 1.0 - (distance * distance);
-        float strength = distance * distance * distance;
+        float strength = v * v * v;
 
         vec2 fieldUV = vParticleInfo.xy * 0.5 + 0.5; // (-1, 1) range to (0, 1)
         float density = texture(uDensity, fieldUV).x;
@@ -226,8 +228,8 @@ const viscosityFS = `#version 300 es
 
         vec2 vel = vParticleInfo.zw;
         float magnitude = invDensity * strength;
-        vec2 v = magnitude * vel;
-        outColor = vec4(v.x, v.y, magnitude, 0.0);
+        vec2 magVel = magnitude * vel;
+        outColor = vec4(magVel.x, magVel.y, magnitude, 0.0);
     }`;
 
 const displayFS = `#version 300 es
@@ -336,13 +338,15 @@ function randomRange(min, max) {
 // initialise particles
 const initialData = new Float32Array(particle_count * 4);
 for (let i = 0; i < particle_count; i++) {
+    let pos_x = randomRange(-0.9, 0.4);
+    let pos_y = randomRange(0.4, 0.9);
     // position
-    initialData[i * 4] = randomRange(-0.9, 0.4); // x
-    initialData[i * 4 + 1] = randomRange(0.4, 0.9); // y
+    initialData[i * 4] = pos_x;
+    initialData[i * 4 + 1] = pos_y;
 
-    // velocity
-    initialData[i * 4 + 2] = 0.0;
-    initialData[i * 4 + 3] = 0.0;
+    // previous position
+    initialData[i * 4 + 2] = pos_x;
+    initialData[i * 4 + 3] = pos_y;
 }
 gl.bindTexture(gl.TEXTURE_2D, particleFBO[0].tex);
 gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, texture_size, texture_size, gl.RGBA, gl.FLOAT, initialData);
@@ -370,7 +374,7 @@ gui.add(config, 'REST_DENSITY', 0.0, 30.5).name('Rest Density');
 gui.add(config, 'GAS_CONSTANT', 0.0, 50.0).name('Gas Constant');
 gui.add(config, 'NEAR_PRESSURE_MULTIPLIER', 0.0, 20.0).name('Near Pressure Multiplier');
 gui.add(config, 'GRAVITY', 0.0, 10.0).name('Gravity');
-gui.add(config, 'VISCOSITY', 0.0, 100.0).name('Viscosity');
+gui.add(config, 'VISCOSITY', 0.0, 0.1).name('Viscosity');
 
 // Initialise stats for FPS
 const stats = new Stats();
